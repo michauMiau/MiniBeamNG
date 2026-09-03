@@ -43,7 +43,7 @@ VEHICLE_KEEP_PREFIXES = (
 )
 
 SKIP_DIRS = {
-    "BinLinux",   # Linux binaries, not needed on Windows
+    "BinLinux",   # Linux binaries, comment this line if needed
     "campaigns",  # reference removed levels/vehicles
 }
 
