@@ -2,24 +2,25 @@
 
 A script that builds a small copy of BeamNG.drive from your existing install. It copies only the files needed to run the game into a new folder; your original install stays untouched, so nothing gets deleted by mistake.
 
-The goal is a working install under 3GB with one car (Gavril D-Series), one map (Garage V2), walking mode, and the full game UI.
+The goal is a working install under 3GB with one car (Pickup), one map (Small Island), walking mode, and the full game UI.
 
 ## What it keeps
 
 - Game core: `Bin64`, `gameengine.zip`, `tech`, `lua`, `shaders`, `ui`, `settings`, `locales`
 - `content/art_shapes.zip` (the main menu won't launch without it)
 - Other content assets, audio, and cache
-- Garage V2 map only
-- Vehicles whose name starts with `gavril` (edit the list at the top of `minibeamng.py` to change this)
+- Small Island map only
+- Vehicles: `common`, `pickup`, `unicycle` (the unicycle is required for the first person camera). Edit the list at the top of `minibeamng.py` to change this.
 - Chromium Embedded Framework files
 
 ## What it drops
 
-- `BinLinux` (Linux binaries)
+- `BinLinux` (use `--keep-linux` to keep it; Epic Online Services libs are removed either way)
 - Crash reporter (`crashrpt.dll`, `CrashSender.exe`, etc.)
-- Epic Online Services DLLs
+- Epic Online Services DLL and .so files
 - Pacenote audio (`pacenote_*.ogg`) - the Lua scripts stay, only the voice files go
 - `campaigns` (they reference maps and vehicles that are being removed)
+- `flowgraphEditor`
 - SVN conflict leftovers (`*.mine`, `*.r12345`)
 
 ## Usage
@@ -27,12 +28,13 @@ The goal is a working install under 3GB with one car (Gavril D-Series), one map 
 Double-click `run.bat`, or from a terminal:
 
 ```
-python minibeamng.py <source_dir> [dest_dir] [--dry-run]
+python minibeamng.py <source_dir> [dest_dir] [--dry-run] [--keep-linux]
 ```
 
 - `source_dir` - your BeamNG.drive folder (the one with `Bin64` and `content`)
 - `dest_dir` - where the mini copy goes, defaults to `<source>_mini` next to the original
 - `--dry-run` - prints what would be copied or skipped without writing anything
+- `--keep-linux` - keeps the `BinLinux` folder
 
 Example:
 
