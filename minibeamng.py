@@ -11,12 +11,17 @@ Usage:
 
 Profiles:
     full       Keep all levels and vehicles. Remove campaigns, crash reporter,
-               EOS, pacenote audio, docs. Fits ~20GB.
+               EOS, pacenote audio, docs, support.exe, roadArchitect, tech.
+               Still ~45GB (won't fit on 32GB USB).
     compact    Keep only pickup, common, unicycle vehicles and garage_v2 level.
                Remove campaigns, crash reporter, EOS, pacenote audio, docs.
-               Fits ~6GB.
+               ~14GB (fits on 16GB USB).
     extreme    Like compact but also strip unnecessary UI apps, keep only
-               English locale. Fits ~5GB. Add --recompress to get <5GB.
+               English locale. ~12GB. Add --recompress for ~8-10GB.
+
+To fit on a 32GB USB, use --profile full and manually remove unwanted
+levels/vehicles from the source before running, or edit the levels_keep
+and vehicles_keep sets in the script.
 
 Options:
     --profile PROFILE     full, compact, or extreme (default: compact)
@@ -105,13 +110,23 @@ STRIP_UI_APPS = {
     "trafficSignalTest",
 }
 
-# Docs/licenses to remove in all profiles
 SKIP_DOC_FILES = {
     "EULA.pdf",
     "PrivacyPolicy.pdf",
     "PrivacyPolicy-tech.pdf",
     "licenses.txt",
     "lua/bCDDL-1.1.txt",
+}
+
+# Files to remove in all profiles
+SKIP_FILES_ALL = {
+    "support.exe",
+}
+
+# Directories to remove in all profiles
+SKIP_DIRS_ALWAYS = {
+    "roadArchitect",
+    "tech",
 }
 
 # Pacenote pattern (audio only, keep lua scripts)
@@ -141,11 +156,17 @@ def should_skip_file(rel, profile):
     if rl in PROTECTED:
         return False
 
-    # Docs
+    # Docs and PDFs
     if rl in SKIP_DOC_FILES:
         return True
+    if name_l.endswith(".pdf"):
+        return True
 
-    # Exact skip list
+    # Files to always skip
+    if name_l in SKIP_FILES_ALL:
+        return True
+
+    # Profile-specific skip list
     if name_l in profile["skip_files"]:
         return True
 
@@ -186,11 +207,8 @@ def should_skip_dir(rel, profile):
     name = os.path.basename(rel)
     if name in profile["skip_dirs"]:
         return True
-
-    # BinLinux handled separately via keep_linux flag
-    if name == "BinLinux":
-        return True  # will be overridden by keep_linux in run()
-
+    if name in SKIP_DIRS_ALWAYS:
+        return True
     return False
 
 
@@ -268,10 +286,10 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
         keep_dirs = []
         for d in dirnames:
             rel = f"{rel_dir_slash}/{d}" if rel_dir_slash else d
-            if should_skip_dir(rel, profile):
-                continue
             # BinLinux: only skip if not keep_linux
             if d == "BinLinux" and not keep_linux:
+                continue
+            if should_skip_dir(rel, profile):
                 continue
             keep_dirs.append(d)
         dirnames[:] = keep_dirs
@@ -376,6 +394,8 @@ def main():
         print("Note:     Will re-compress content zip files (takes time)")
     if args.dry_run:
         print("Mode:     dry run (nothing will be written)")
+    print("Warning:  Any files you have manually added to the source folder")
+    print("          will also be copied to the destination.")
     print()
 
     run(args.source, dest, profile, args.dry_run,

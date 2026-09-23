@@ -2,13 +2,15 @@
 
 A script that builds a small copy of BeamNG.drive from your existing install. It copies only the files needed to run the game into a new folder; your original install stays untouched, so nothing gets deleted by mistake.
 
-Three size profiles target different drive sizes: full (~20GB), compact (~6GB), and extreme (~5GB, or <5GB with recompression).
+Three size profiles target different drive sizes: full (~45GB), compact (~14GB), and extreme (~12GB, or ~8-10GB with recompression).
 
 ## Profiles
 
-- **full** - All levels and vehicles. Removes campaigns, crash reporter, EOS, pacenote audio, and docs.
-- **compact** - Keeps only `pickup`, `common`, and `unicycle` vehicles plus `garage_v2` level.
-- **extreme** - Like compact, plus strips debug UI apps (radio test, camera test, etc.) and all non-English locales.
+- **full** - All levels and vehicles. Removes campaigns, crash reporter, EOS, pacenote audio, docs, support.exe, roadArchitect, tech. Still ~45GB.
+- **compact** - Keeps only `pickup`, `common`, and `unicycle` vehicles plus `garage_v2` level. ~14GB.
+- **extreme** - Like compact, plus strips debug UI apps (radio test, camera test, etc.) and all non-English locales. ~12GB.
+
+To fit on a 32GB USB, use --profile full and either manually delete unwanted levels/vehicles from the source before running, or edit the levels_keep and vehicles_keep sets in the script.
 
 ## Usage
 
@@ -26,19 +28,9 @@ Options:
 - `--recompress` - re-compress content zip files (saves GBs, takes time)
 - `--skip-recompress` - skip recompression even in extreme mode
 
-Example for a 32GB drive:
+Example:
 ```
 python minibeamng.py "C:\BeamNG" --profile compact
-```
-
-Example for a 16GB drive:
-```
-python minibeamng.py "C:\BeamNG" --profile extreme
-```
-
-Example for under 5GB (BYO modded game):
-```
-python minibeamng.py "C:\BeamNG" --profile extreme --recompress
 ```
 
 ## What it keeps
