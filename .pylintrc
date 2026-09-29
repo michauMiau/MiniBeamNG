@@ -1,0 +1,19 @@
+[MAIN]
+persistent=no
+jobs=1
+
+[MESSAGES CONTROL]
+# One key only: a second disable= line replaces the first instead of adding.
+# R0911/R0912 fire on should_skip_file(), a flat list of independent rules;
+# splitting it would only hide the rules from each other.
+# Test method names are the documentation; a docstring would only repeat it.
+disable=too-many-return-statements,too-many-branches,missing-function-docstring,missing-class-docstring
+
+[FORMAT]
+max-line-length=100
+
+[DESIGN]
+max-args=6
+max-locals=26
+max-branches=17
+max-statements=62

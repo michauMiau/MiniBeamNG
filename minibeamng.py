@@ -34,6 +34,7 @@ Options:
 """
 
 import argparse
+import copy
 import os
 import re
 import shutil
@@ -96,18 +97,19 @@ PROFILES = {
     },
 }
 
-# UI apps to strip in extreme mode (radio test, debug tools, etc.)
+# UI apps to strip in extreme mode (radio test, debug tools, etc.).
+# Kept lowercase: compared against an already-lowercased path.
 STRIP_UI_APPS = {
-    "radio",          # radio test app
-    "radioTest",
-    "soundTest",
-    "cameraTest",
+    "radio",
+    "radiotest",
+    "soundtest",
+    "cameratest",
     "debug",
     "devtools",
     "benchmark",
     "perf",
-    "RallyVisualPacenotes",
-    "trafficSignalTest",
+    "rallyvisualpacenotes",
+    "trafficsignaltest",
 }
 
 SKIP_DOC_FILES = {
@@ -117,6 +119,9 @@ SKIP_DOC_FILES = {
     "licenses.txt",
     "lua/bCDDL-1.1.txt",
 }
+
+# The one translation folder extreme mode keeps.
+KEEP_LOCALE = "en"
 
 # Files to remove in all profiles
 SKIP_FILES_ALL = {
@@ -140,14 +145,18 @@ PROTECTED = {
 
 
 def get_profile(name):
+    """Return a deep copy of the named profile, or exit if it doesn't exist."""
     p = PROFILES.get(name)
     if not p:
         print(f"Unknown profile '{name}'. Options: {', '.join(PROFILES)}")
         sys.exit(1)
-    return dict(p)  # return a copy
+    # Deep copy: callers mutate the copy (e.g. toggling "recompress"), and a
+    # shallow copy would let that leak into PROFILES for the whole process.
+    return copy.deepcopy(p)
 
 
 def should_skip_file(rel, profile):
+    """Return True when a file at rel_path should be left out of the copy."""
     name = os.path.basename(rel)
     name_l = name.lower()
     rl = rel.replace(os.sep, "/").lower()
@@ -194,16 +203,18 @@ def should_skip_file(rel, profile):
         if len(parts) >= 4 and parts[3] in STRIP_UI_APPS:
             return True
 
-    # Locale stripping (extreme mode) - keep only English
+    # Locale stripping (extreme mode) - keep only English.
+    # Path shape: locales/translations/<lang>/... so the lang is index 2.
     if profile["strip_locales"] and rl.startswith("locales/translations/"):
         parts = rl.split("/")
-        if len(parts) >= 4 and parts[3] != "en":
+        if len(parts) >= 3 and parts[2] != KEEP_LOCALE:
             return True
 
     return False
 
 
 def should_skip_dir(rel, profile):
+    """Return True when a directory at rel should be pruned from the walk."""
     name = os.path.basename(rel)
     if name in profile["skip_dirs"]:
         return True
@@ -227,19 +238,19 @@ def rezip_file(path, dry_run):
                                   zipfile.ZIP_DEFLATED, 9)
 
         os.replace(tmp_path, path)
-        orig = os.path.getsize(path)
-        print(f"  Recompressed {os.path.basename(path)} -> {human_size(orig)}")
-    except Exception as e:
+        new_size = os.path.getsize(path)
+        print(f"  Recompressed {os.path.basename(path)} -> {human_size(new_size)}")
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as err:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-        print(f"  Warning: could not recompress {path}: {e}")
+        print(f"  Warning: could not recompress {path}: {err}")
 
 
 def recompress_content(dest, dry_run):
     """Re-compress all content zip files in the destination."""
     print()
     print("Recompressing content zip files...")
-    for dirpath, dirnames, filenames in os.walk(os.path.join(dest, "content")):
+    for dirpath, _dirnames, filenames in os.walk(os.path.join(dest, "content")):
         for f in filenames:
             if f.endswith(".zip"):
                 full = os.path.join(dirpath, f)
@@ -247,12 +258,16 @@ def recompress_content(dest, dry_run):
 
 
 def is_dest_inside_source(source, dest):
+    """Return True if dest sits inside source, or the other way around."""
     s = os.path.abspath(source) + os.sep
     d = os.path.abspath(dest) + os.sep
     return d.startswith(s) or s.startswith(d)
 
 
 def run(source, dest, profile, dry_run, keep_linux, force_recompress):
+    """Copy every kept file from source into dest and report the size."""
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     source = os.path.abspath(source)
     dest = os.path.abspath(dest)
 
@@ -328,10 +343,12 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
     # Estimate recompressed size
     should_recompress = profile["recompress"] or force_recompress
     if should_recompress:
-        # Estimate: content zips are stored (no compression), deflate gets ~65%
-        estimated_recompressed = copied_bytes - copied_zip_bytes + int(copied_zip_bytes * 0.65)
-        print(f"Estimated size with recompression: {human_size(estimated_recompressed)}")
-        print(f"(Zip files: {human_size(copied_zip_bytes)} -> est. {human_size(int(copied_zip_bytes * 0.65))})")
+        # Content zips are stored (no compression), deflate gets roughly 65%
+        zip_estimate = int(copied_zip_bytes * 0.65)
+        total_estimate = copied_bytes - copied_zip_bytes + zip_estimate
+        print(f"Estimated size with recompression: {human_size(total_estimate)}")
+        print(f"(Zip files: {human_size(copied_zip_bytes)}"
+              f" -> est. {human_size(zip_estimate)})")
 
         if not dry_run:
             recompress_content(dest, dry_run=False)
@@ -343,13 +360,16 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
 
 
 def human_size(n):
+    """Format a byte count as a human readable size string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
             return f"{n:.1f} {unit}"
         n /= 1024
+    return f"{n:.1f} TB"
 
 
 def main():
+    """Parse command line arguments and run the copy."""
     parser = argparse.ArgumentParser(
         description="Copy a minimal, working BeamNG.drive install to a new folder.")
     parser.add_argument("source", help="Path to your BeamNG.drive folder")
