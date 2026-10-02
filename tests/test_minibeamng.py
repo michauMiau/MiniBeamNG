@@ -101,6 +101,17 @@ class ProfileTests(unittest.TestCase):
         for rel in ("EULA.pdf", "PrivacyPolicy.pdf", "licenses.txt", "support.exe"):
             self.assertTrue(mb.should_skip_file(rel, self.compact), rel)
 
+    def test_doc_entries_match_regardless_of_case(self):
+        # The filter compares a lowercased path, so the entries must be
+        # lowercase or they never match. bCDDL-1.1.txt is the real mixed-case
+        # name in a BeamNG install.
+        self.assertTrue(mb.should_skip_file("lua/bCDDL-1.1.txt", self.compact))
+        self.assertTrue(mb.should_skip_file("PrivacyPolicy-tech.pdf", self.compact))
+
+    def test_filter_tables_are_lowercase(self):
+        # Import-time guard: uppercase entries silently never match.
+        mb._selfcheck()  # pylint: disable=protected-access
+
     def test_campaigns_and_flowgraph_dirs_are_skipped(self):
         for name in ("campaigns", "flowgraphEditor", "roadArchitect", "tech"):
             self.assertTrue(mb.should_skip_dir(name, self.compact), name)
@@ -209,6 +220,20 @@ class CopyTests(unittest.TestCase):
             os.path.join(dest, "locales", "translations", "de")))
         self.assertTrue(os.path.exists(
             os.path.join(dest, "locales", "translations", "en")))
+
+    def test_broken_symlink_does_not_abort_the_copy(self):
+        # A real install can hold a dangling link; it must not stop the run.
+        link = os.path.join(self.source, "Bin64", "dangling.dll")
+        try:
+            os.symlink("/nonexistent/target", link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+
+        dest = self.copy_with()
+        # Everything else still made it across.
+        self.assertTrue(os.path.exists(
+            os.path.join(dest, "content", "vehicles", "pickup.zip")))
+        self.assertTrue(os.path.exists(os.path.join(dest, "Bin64", "libcef.dll")))
 
 
 class GuardTests(unittest.TestCase):

@@ -113,15 +113,19 @@ STRIP_UI_APPS = {
 }
 
 SKIP_DOC_FILES = {
-    "EULA.pdf",
-    "PrivacyPolicy.pdf",
-    "PrivacyPolicy-tech.pdf",
+    "eula.pdf",
+    "privacypolicy.pdf",
+    "privacypolicy-tech.pdf",
     "licenses.txt",
-    "lua/bCDDL-1.1.txt",
+    "lua/bcddl-1.1.txt",
 }
 
 # The one translation folder extreme mode keeps.
 KEEP_LOCALE = "en"
+
+# How many per-file copy failures to print before staying quiet. The count
+# keeps growing; the list would otherwise flood a multi-hour run.
+MAX_REPORTED_FAILURES = 10
 
 # Files to remove in all profiles
 SKIP_FILES_ALL = {
@@ -142,6 +146,31 @@ SVN_CONFLICT = re.compile(r"(\.mine$|\.r\d+$)")
 PROTECTED = {
     "content/art_shapes.zip",
 }
+
+
+def _assert_lowercase(entries, label):
+    """Fail loudly if a filter set has uppercase entries.
+
+    should_skip_file() compares against a lowercased path, so an uppercase
+    entry here would never match anything and the file would silently survive.
+    """
+    bad = [e for e in entries if e != e.lower()]
+    if bad:
+        raise AssertionError(f"{label} must be lowercase, got: {bad}")
+
+
+def _selfcheck():
+    """Validate the filter tables at import time, before any copying starts."""
+    _assert_lowercase(SKIP_DOC_FILES, "SKIP_DOC_FILES")
+    _assert_lowercase(SKIP_FILES_ALL, "SKIP_FILES_ALL")
+    _assert_lowercase(STRIP_UI_APPS, "STRIP_UI_APPS")
+    for name, profile in PROFILES.items():
+        _assert_lowercase(profile["skip_files"], f"PROFILES[{name}]['skip_files']")
+        _assert_lowercase(profile["vehicles_keep"] or (), f"PROFILES[{name}]['vehicles_keep']")
+        _assert_lowercase(profile["levels_keep"] or (), f"PROFILES[{name}]['levels_keep']")
+
+
+_selfcheck()
 
 
 def get_profile(name):
@@ -292,6 +321,8 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
     copied_bytes = 0
     skipped_bytes = 0
     copied_zip_bytes = 0  # content zips that were copied (for recompression estimate)
+    failed_files = 0
+    failed_paths = []
 
     for dirpath, dirnames, filenames in os.walk(source):
         rel_dir = os.path.relpath(dirpath, source)
@@ -325,8 +356,17 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
 
             target = os.path.join(dest, rel)
             if not dry_run:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copy2(full, target)
+                # A copy can run for hours over 12k files. One unreadable file
+                # or a broken symlink must not abort the whole thing.
+                try:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    shutil.copy2(full, target)
+                except (OSError, shutil.Error) as err:
+                    failed_files += 1
+                    failed_paths.append(rel)
+                    if len(failed_paths) <= MAX_REPORTED_FAILURES:
+                        print(f"  Warning: skipped {rel}: {err}")
+                    continue
 
             copied_files += 1
             copied_bytes += size
@@ -339,6 +379,13 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
     verb = "Would copy" if dry_run else "Copied"
     print(f"{verb} {copied_files} files ({human_size(copied_bytes)})")
     print(f"Skipped {skipped_files} files ({human_size(skipped_bytes)})")
+
+    # A silent undercount would look like a clean run, so surface it loudly.
+    if failed_files:
+        print(f"FAILED to copy {failed_files} files (unreadable or broken links)")
+        if failed_files > MAX_REPORTED_FAILURES:
+            print(f"  ...and {failed_files - MAX_REPORTED_FAILURES} more")
+        print("  The game may be missing files. Copy them over from the original.")
 
     # Estimate recompressed size
     should_recompress = profile["recompress"] or force_recompress
