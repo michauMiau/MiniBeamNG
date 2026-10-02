@@ -12,6 +12,14 @@ Three size profiles target different drive sizes: full (~45GB), compact (~14GB),
 
 To fit on a 32GB USB, use --profile full and either manually delete unwanted levels/vehicles from the source before running, or edit the levels_keep and vehicles_keep sets in the script.
 
+## Safety
+
+The original install is never written to. The script refuses to run when the destination resolves to the source, to a folder inside it, or to a symlink pointing into it. It only ever copies files out.
+
+If the destination already has files in it, the script warns instead of pretending the result is clean - files kept by an earlier, more permissive run stay where they are.
+
+A run that cannot read or copy something says so at the end instead of quietly producing a folder with holes in it.
+
 ## Usage
 
 Double-click `run.bat`, or from a terminal:

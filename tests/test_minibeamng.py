@@ -116,6 +116,22 @@ class ProfileTests(unittest.TestCase):
         for name in ("campaigns", "flowgraphEditor", "roadArchitect", "tech"):
             self.assertTrue(mb.should_skip_dir(name, self.compact), name)
 
+    def test_dir_filter_ignores_case(self):
+        # Compared against a lowercased basename, so the entries must match
+        # however the folder is actually cased on disk.
+        for name in ("Campaigns", "FLOWGRAPHEDITOR", "roadarchitect", "Tech"):
+            self.assertTrue(mb.should_skip_dir(name, self.compact), name)
+
+    def test_whitelists_ignore_case(self):
+        # Levels used to compare the raw name, so Garage_v2.zip was dropped
+        # from a compact install while Common.zip was kept.
+        self.assertFalse(mb.should_skip_file("content/levels/Garage_v2.zip", self.compact))
+        self.assertFalse(mb.should_skip_file("content/vehicles/Common.zip", self.compact))
+        self.assertFalse(mb.should_skip_file("content/vehicles/PICKUP.zip", self.compact))
+
+    def test_zip_extension_is_case_insensitive(self):
+        self.assertFalse(mb.should_skip_file("content/vehicles/common.ZIP", self.compact))
+
 
 class CopyTests(unittest.TestCase):
     """End-to-end behaviour of run() against a throwaway tree."""
@@ -265,6 +281,108 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(mb.is_dest_inside_source("/a/b", "/a/b/c"))
         self.assertTrue(mb.is_dest_inside_source("/a/b/c", "/a/b"))
         self.assertFalse(mb.is_dest_inside_source("/a/b", "/a/c"))
+
+    def test_dest_equal_to_source_is_inside(self):
+        # realpath collapses a trailing-slash difference into the same path.
+        self.assertTrue(mb.is_dest_inside_source(self.source, self.source))
+
+    def test_symlinked_dest_into_source_is_blocked(self):
+        # abspath() would miss this and the copy would land in the original
+        # install, which is the one thing this script promises never to do.
+        inside = os.path.join(self.source, "out")
+        os.makedirs(inside)
+        link = os.path.join(self.tmp, "link")
+        try:
+            os.symlink(inside, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+
+        self.assertTrue(mb.is_dest_inside_source(self.source, link))
+        with self.assertRaises(SystemExit):
+            mb.run(self.source, link, mb.get_profile("compact"), False, False, False)
+        # Nothing was written into the source tree.
+        self.assertEqual(os.listdir(inside), [])
+
+
+class RecompressFailureTests(unittest.TestCase):
+    """A bad zip must not take down a run that copied hours of data."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_corrupt_zip_is_reported_not_fatal(self):
+        # zin.read() raises zlib.error, whose MRO does not include any of the
+        # zipfile/OSError classes, so it used to abort the whole run.
+        src = os.path.join(self.tmp, "src", "content", "vehicles")
+        os.makedirs(src)
+        good = os.path.join(src, "pickup.zip")
+        with zipfile.ZipFile(good, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("v/pickup/a.bin", b"payload" * 500)
+
+        # Claim DEFLATE in both headers while the payload stays stored bytes.
+        bad = os.path.join(src, "common.zip")
+        with zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("v/common/a.bin", b"PAYLOAD" * 500)
+        with open(bad, "rb") as handle:
+            data = bytearray(handle.read())
+        for sig, off in ((b"PK\x03\x04", 8), (b"PK\x01\x02", 10)):
+            pos = 0
+            while True:
+                pos = data.find(sig, pos)
+                if pos < 0:
+                    break
+                data[pos + off] = 8  # force DEFLATE
+                data[pos + off + 1] = 0
+                pos += 4
+        with open(bad, "wb") as handle:
+            handle.write(bytes(data))
+
+        dest = os.path.join(self.tmp, "dest")
+        # Must not raise.
+        mb.run(os.path.join(self.tmp, "src"), dest, mb.get_profile("compact"),
+               False, False, True)
+
+        # The good zip still got recompressed.
+        out_good = os.path.join(dest, "content", "vehicles", "pickup.zip")
+        self.assertLess(os.path.getsize(out_good), os.path.getsize(good))
+        # The corrupt one is left as copied, and no .tmp litter survives.
+        out_bad = os.path.join(dest, "content", "vehicles", "common.zip")
+        self.assertTrue(os.path.exists(out_bad))
+        self.assertFalse(os.path.exists(out_bad + ".minibeamng.tmp"))
+        self.assertEqual(os.listdir(os.path.dirname(out_bad)).count("common.zip"), 1)
+
+    def test_uppercase_zip_extension_is_recompressed(self):
+        src = os.path.join(self.tmp, "src2", "content", "vehicles")
+        os.makedirs(src)
+        original = os.path.join(src, "pickup.ZIP")
+        with zipfile.ZipFile(original, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("v/pickup/a.bin", b"payload" * 500)
+
+        dest = os.path.join(self.tmp, "dest2")
+        mb.run(os.path.join(self.tmp, "src2"), dest, mb.get_profile("compact"),
+               False, False, True)
+
+        out = os.path.join(dest, "content", "vehicles", "pickup.ZIP")
+        self.assertTrue(os.path.exists(out))
+        self.assertLess(os.path.getsize(out), os.path.getsize(original))
+
+    def test_recompression_preserves_file_mode(self):
+        src = os.path.join(self.tmp, "src3", "content", "vehicles")
+        os.makedirs(src)
+        original = os.path.join(src, "pickup.zip")
+        with zipfile.ZipFile(original, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("v/pickup/a.bin", b"payload" * 500)
+        os.chmod(original, 0o444)
+
+        dest = os.path.join(self.tmp, "dest3")
+        mb.run(os.path.join(self.tmp, "src3"), dest, mb.get_profile("compact"),
+               False, False, True)
+
+        out = os.path.join(dest, "content", "vehicles", "pickup.zip")
+        self.assertEqual(os.stat(out).st_mode & 0o777, 0o444)
 
 
 class HelperTests(unittest.TestCase):

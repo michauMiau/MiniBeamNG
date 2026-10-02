@@ -40,6 +40,7 @@ import re
 import shutil
 import sys
 import zipfile
+import zlib
 
 # --- Profile definitions ----------------------------------------------------
 
@@ -47,7 +48,7 @@ PROFILES = {
     "full": {
         "levels_keep": None,           # None = keep all
         "vehicles_keep": None,         # None = keep all
-        "skip_dirs": ["campaigns", "flowgraphEditor"],
+        "skip_dirs": ["campaigns", "flowgrapheditor"],
         "skip_files": {
             "crashrpt.dll",
             "crashrpt_lang.ini",
@@ -64,7 +65,7 @@ PROFILES = {
     "compact": {
         "levels_keep": {"garage_v2.zip"},
         "vehicles_keep": {"common", "pickup", "unicycle"},
-        "skip_dirs": ["campaigns", "flowgraphEditor"],
+        "skip_dirs": ["campaigns", "flowgrapheditor"],
         "skip_files": {
             "crashrpt.dll",
             "crashrpt_lang.ini",
@@ -81,7 +82,7 @@ PROFILES = {
     "extreme": {
         "levels_keep": {"garage_v2.zip"},
         "vehicles_keep": {"common", "pickup", "unicycle"},
-        "skip_dirs": ["campaigns", "flowgraphEditor"],
+        "skip_dirs": ["campaigns", "flowgrapheditor"],
         "skip_files": {
             "crashrpt.dll",
             "crashrpt_lang.ini",
@@ -127,6 +128,11 @@ KEEP_LOCALE = "en"
 # keeps growing; the list would otherwise flood a multi-hour run.
 MAX_REPORTED_FAILURES = 10
 
+# Assumed size of a recompressed zip, as a fraction of the original. BeamNG
+# stores its content zips uncompressed, so most of them shrink a lot; already
+# deflated or incompressible ones will not shrink at all.
+ZIP_RECOMPRESS_RATIO = 0.65
+
 # Files to remove in all profiles
 SKIP_FILES_ALL = {
     "support.exe",
@@ -134,7 +140,7 @@ SKIP_FILES_ALL = {
 
 # Directories to remove in all profiles
 SKIP_DIRS_ALWAYS = {
-    "roadArchitect",
+    "roadarchitect",
     "tech",
 }
 
@@ -164,7 +170,9 @@ def _selfcheck():
     _assert_lowercase(SKIP_DOC_FILES, "SKIP_DOC_FILES")
     _assert_lowercase(SKIP_FILES_ALL, "SKIP_FILES_ALL")
     _assert_lowercase(STRIP_UI_APPS, "STRIP_UI_APPS")
+    _assert_lowercase(SKIP_DIRS_ALWAYS, "SKIP_DIRS_ALWAYS")
     for name, profile in PROFILES.items():
+        _assert_lowercase(profile["skip_dirs"], f"PROFILES[{name}]['skip_dirs']")
         _assert_lowercase(profile["skip_files"], f"PROFILES[{name}]['skip_files']")
         _assert_lowercase(profile["vehicles_keep"] or (), f"PROFILES[{name}]['vehicles_keep']")
         _assert_lowercase(profile["levels_keep"] or (), f"PROFILES[{name}]['levels_keep']")
@@ -219,7 +227,10 @@ def should_skip_file(rel, profile):
     # Levels whitelist
     if rl.startswith("content/levels/") and rl.endswith(".zip"):
         if profile["levels_keep"] is not None:
-            return name not in profile["levels_keep"]
+            # name_l, not name: the vehicles whitelist below already compares
+            # the lowercased name, and a differently-spelled level must not
+            # vanish from a "working" install.
+            return name_l not in profile["levels_keep"]
 
     # Vehicles whitelist
     if rl.startswith("content/vehicles/") and rl.endswith(".zip"):
@@ -244,53 +255,87 @@ def should_skip_file(rel, profile):
 
 def should_skip_dir(rel, profile):
     """Return True when a directory at rel should be pruned from the walk."""
-    name = os.path.basename(rel)
-    if name in profile["skip_dirs"]:
+    # Compare lowercased: the other filters do the same, and Windows/macOS
+    # filesystems are case-insensitive anyway.
+    name_l = os.path.basename(rel).lower()
+    if name_l in profile["skip_dirs"]:
         return True
-    if name in SKIP_DIRS_ALWAYS:
+    if name_l in SKIP_DIRS_ALWAYS:
         return True
     return False
 
 
 def rezip_file(path, dry_run):
-    """Re-compress a zip file using deflate instead of stored."""
+    """Re-compress a zip file using deflate instead of stored.
+
+    Returns False when the zip could not be rewritten; the caller keeps going.
+    """
     if dry_run:
         print(f"  [dry-run] Would recompress: {path}")
-        return
+        return True
 
     tmp_path = path + ".minibeamng.tmp"
     try:
+        mode = os.stat(path).st_mode
         with zipfile.ZipFile(path, "r") as zin:
             with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
                 for item in zin.infolist():
+                    # read() can raise zlib.error on a corrupt payload, so it
+                    # has to be inside this try. writestr's compress_type
+                    # argument overrides item.compress_type, which is what
+                    # turns stored entries into deflated ones.
                     zout.writestr(item, zin.read(item.filename),
                                   zipfile.ZIP_DEFLATED, 9)
 
+        # os.replace does not carry the mode across, so restore it.
+        os.chmod(tmp_path, mode & 0o7777)
         os.replace(tmp_path, path)
         new_size = os.path.getsize(path)
         print(f"  Recompressed {os.path.basename(path)} -> {human_size(new_size)}")
-    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as err:
+    except (zipfile.BadZipFile, zlib.error, OSError, RuntimeError, ValueError,
+            NotImplementedError) as err:
+        # Losing one zip must not abort a run that may have copied hours of
+        # data already. The untouched original stays in place.
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         print(f"  Warning: could not recompress {path}: {err}")
+        return False
+    return True
 
 
 def recompress_content(dest, dry_run):
     """Re-compress all content zip files in the destination."""
     print()
     print("Recompressing content zip files...")
+    failed = 0
     for dirpath, _dirnames, filenames in os.walk(os.path.join(dest, "content")):
         for f in filenames:
-            if f.endswith(".zip"):
+            # Case-insensitive: should_skip_file() already accepts .ZIP.
+            if f.lower().endswith(".zip"):
                 full = os.path.join(dirpath, f)
-                rezip_file(full, dry_run)
+                if not rezip_file(full, dry_run) and not dry_run:
+                    failed += 1
+    if failed:
+        print(f"  {failed} zip file(s) left uncompressed.")
 
 
 def is_dest_inside_source(source, dest):
-    """Return True if dest sits inside source, or the other way around."""
-    s = os.path.abspath(source) + os.sep
-    d = os.path.abspath(dest) + os.sep
-    return d.startswith(s) or s.startswith(d)
+    """Return True if dest resolves inside source, or source inside dest.
+
+    realpath and normcase both matter. A symlinked dest would otherwise pass the
+    guard and then write straight into the original install, and on Windows the
+    same paths spelled with different case compare unequal.
+    """
+    s = os.path.normcase(os.path.realpath(source))
+    d = os.path.normcase(os.path.realpath(dest))
+    if s == d:
+        return True
+    return d.startswith(s + os.sep) or s.startswith(d + os.sep)
+
+
+def _walk_error(err):
+    """os.walk onerror hook: an unreadable folder would vanish silently."""
+    print(f"  Warning: could not read folder {getattr(err, 'filename', '?')}: {err}")
 
 
 def run(source, dest, profile, dry_run, keep_linux, force_recompress):
@@ -312,6 +357,14 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
         print("Error: destination must not be inside source.")
         sys.exit(1)
 
+    # An existing dest keeps files this run skips, so switching from a lenient
+    # to a stricter profile would silently leave the old files behind. Say so
+    # rather than reporting a smaller copy than what is actually on disk.
+    if os.path.isdir(dest) and os.listdir(dest):
+        print(f"Warning: destination already exists and is not empty: {dest}")
+        print("         Files kept from an earlier run will stay there.")
+        print("         Delete the folder first for a clean result.")
+
     if not (os.path.isdir(os.path.join(source, "Bin64"))
             or os.path.isdir(os.path.join(source, "content"))):
         print("Warning: source does not look like a BeamNG.drive install.")
@@ -324,7 +377,7 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
     failed_files = 0
     failed_paths = []
 
-    for dirpath, dirnames, filenames in os.walk(source):
+    for dirpath, dirnames, filenames in os.walk(source, onerror=_walk_error):
         rel_dir = os.path.relpath(dirpath, source)
         rel_dir_slash = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
 
@@ -371,8 +424,9 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
             copied_files += 1
             copied_bytes += size
 
-            # Track content zip bytes for recompression estimate
-            if rel.startswith("content/") and f.endswith(".zip"):
+            # Track content zips for the recompression estimate. Mirror the
+            # case-insensitive extension test used everywhere else.
+            if rel.startswith("content/") and f.lower().endswith(".zip"):
                 copied_zip_bytes += size
 
     print()
@@ -390,17 +444,18 @@ def run(source, dest, profile, dry_run, keep_linux, force_recompress):
     # Estimate recompressed size
     should_recompress = profile["recompress"] or force_recompress
     if should_recompress:
-        # Content zips are stored (no compression), deflate gets roughly 65%
-        zip_estimate = int(copied_zip_bytes * 0.65)
+        # BeamNG ships its content zips STORED (uncompressed), so deflate has
+        # room to work. The factor is a guess: assets that are already deflated
+        # or incompressible (DDS, prebuilt bundles) will come back unchanged.
+        zip_estimate = int(copied_zip_bytes * ZIP_RECOMPRESS_RATIO)
         total_estimate = copied_bytes - copied_zip_bytes + zip_estimate
         print(f"Estimated size with recompression: {human_size(total_estimate)}")
         print(f"(Zip files: {human_size(copied_zip_bytes)}"
               f" -> est. {human_size(zip_estimate)})")
+        print("  Estimate only. The real size is whatever deflate produces.")
 
         if not dry_run:
             recompress_content(dest, dry_run=False)
-    elif dry_run and profile.get("recompress"):
-        print("(Recompression would run in non-dry-run mode)")
 
     if not dry_run:
         print(f"\nMini install ready at: {dest}")
